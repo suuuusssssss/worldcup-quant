@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+
+# C++ build artifacts
+mc_tournament
+*.o
+*.out
+
+# misc
+*.pdf
+.DS_Store
