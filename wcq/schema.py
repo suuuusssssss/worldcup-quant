@@ -7,6 +7,8 @@ changes.
 """
 from __future__ import annotations
 
+from wcq._compat import SLOTS
+
 import datetime as dt
 from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence
@@ -16,7 +18,7 @@ OUTCOMES: tuple[str, str, str] = ("H", "D", "A")
 OUTCOME_INDEX = {"H": 0, "D": 1, "A": 2}
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS)
 class Odds:
     """Decimal odds for the 1X2 market, plus provenance.
 
@@ -65,7 +67,7 @@ class Odds:
         return self.overround > 1.0
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS)
 class Match:
     """A single completed fixture.
 
@@ -103,7 +105,7 @@ class Match:
         return (self.date, self.home, self.away, self.competition)
 
 
-@dataclass(slots=True)
+@dataclass(**SLOTS)
 class Prediction:
     """A model quote for one match, produced strictly from prior information."""
 
@@ -118,7 +120,7 @@ class Prediction:
         return self.probs[OUTCOME_INDEX[outcome]]
 
 
-@dataclass(slots=True)
+@dataclass(**SLOTS)
 class Bet:
     """A hypothetical position taken against a bookmaker price."""
 

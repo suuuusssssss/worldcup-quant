@@ -23,14 +23,15 @@ cpp:
 	$(MAKE) -C cpp
 
 bench: cpp
-	@echo "-- determinism across thread counts (counts must be identical) --"
+	@echo "-- determinism across thread counts (checksums must be identical) --"
 	@for t in 1 2 4 8; do ./cpp/mc_tournament --sims 2000000 --threads $$t \
-	  | grep -E '^ +[0-9]+ ' | md5sum | sed "s/\$$/  threads=$$t/"; done
+	  | grep -E '^ +[0-9]+ ' | cksum | sed "s/\$$/  threads=$$t/"; done
 	@echo "-- throughput + exact cross-check --"
 	./cpp/mc_tournament --sims 20000000 --check | tail -5
 
 backtest:
-	python3 scripts/run_backtest.py --dataset club --devig shin --min-edge 0.03
+	python3 scripts/run_backtest.py --dataset club --devig shin --min-edge 0.03 \
+	  --json-out docs/results_club.json
 
 sweep:
 	python3 scripts/sweep.py --divisions E0,SP1,D1,I1,F1
@@ -40,4 +41,5 @@ tournament: cpp
 
 clean:
 	$(MAKE) -C cpp clean
-	rm -rf .pytest_cache **/__pycache__ .coverage
+	rm -rf .pytest_cache .coverage
+	find . -name __pycache__ -type d -prune -exec rm -rf {} +

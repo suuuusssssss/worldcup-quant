@@ -40,6 +40,8 @@ amount of eyeballing the output would.
 """
 from __future__ import annotations
 
+from wcq._compat import SLOTS
+
 import math
 from dataclasses import dataclass
 from typing import Sequence
@@ -47,7 +49,7 @@ from typing import Sequence
 import numpy as np
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS)
 class Team:
     name: str
     elo: float

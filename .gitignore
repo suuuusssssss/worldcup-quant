@@ -4,7 +4,8 @@ __pycache__/
 .coverage
 htmlcov/
 *.egg-info/
+.venv/
 cpp/mc_tournament
 cpp/mc_tournament_debug
-docs/*.json
 .cache/
+.DS_Store
