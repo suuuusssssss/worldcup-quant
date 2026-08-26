@@ -20,16 +20,46 @@ with a property test: shuffling future results must not change any snapshot.
 """
 from __future__ import annotations
 
+from wcq._compat import SLOTS
+
 from dataclasses import dataclass, field
-from typing import Iterable, Iterator, Optional
+from typing import Callable, Iterable, Iterator, Optional
 
 from wcq.schema import Match
 
 
-@dataclass(frozen=True, slots=True)
+def international_k(competition: str) -> float:
+    """World Football Elo K by tournament importance (eloratings.net).
+
+    A World Cup final carries three times the weight of a friendly; treating
+    them equally both over-reacts to friendlies (where teams experiment) and
+    under-reacts to the matches that teams actually play to win.  The tiers
+    below are the published eloratings.net schedule.
+    """
+    c = competition.lower()
+    if "fifa world cup" in c:
+        return 40.0 if "qualification" in c else 60.0
+    if any(t in c for t in ("uefa euro", "copa américa", "copa america",
+                            "african cup of nations", "africa cup of nations",
+                            "afc asian cup", "gold cup", "confederations cup",
+                            "nations league")):
+        return 40.0 if "qualification" in c else 50.0
+    if "qualification" in c:
+        return 40.0
+    if "friendly" in c:
+        return 20.0
+    return 30.0
+
+
+@dataclass(frozen=True, **SLOTS)
 class EloConfig:
     k: float = 20.0
     """Base learning rate.  Higher = faster adaptation, noisier ratings."""
+
+    k_fn: Optional[Callable[[str], float]] = None
+    """Optional per-match K chosen from `Match.competition`; overrides `k`
+    when set.  Pass `international_k` for the eloratings.net importance tiers.
+    Left None for club leagues, where fixtures carry comparable weight."""
 
     home_advantage: float = 65.0
     """Home edge in Elo points.  ~65 for club football, ~0 at a neutral venue."""
@@ -47,7 +77,7 @@ class EloConfig:
     Squads turn over; a rating earned three years ago is stale.  0 disables."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS)
 class RatingSnapshot:
     """Ratings as of immediately before a given match."""
     home: float
@@ -87,14 +117,21 @@ class EloEngine:
         self._last_date = None
 
     # ---- read side -------------------------------------------------------
-    def rating(self, team: str) -> float:
-        return self._r.get(team, self.cfg.initial)
+    def rating(self, team: str, year: Optional[int] = None) -> float:
+        """Stored rating; pass `year` to apply the same between-season
+        regression `observe()` would use for a match in that year, so the two
+        read paths cannot disagree."""
+        if year is None:
+            return self._r.get(team, self.cfg.initial)
+        return self._regressed(team, year)
 
     def games(self, team: str) -> int:
         return self._n.get(team, 0)
 
-    def table(self) -> dict[str, float]:
-        return dict(self._r)
+    def table(self, year: Optional[int] = None) -> dict[str, float]:
+        if year is None:
+            return dict(self._r)
+        return {t: self._regressed(t, year) for t in self._r}
 
     def observe(self, match: Match) -> RatingSnapshot:
         """Pre-match ratings.  Read-only: calling this twice is identical."""
@@ -116,12 +153,11 @@ class EloEngine:
         pull = 1.0 - (1.0 - f) ** gap
         return r + pull * (self.cfg.initial - r)
 
-    # ---- write side ------------------------------------------------------
-    def update(self, match: Match) -> None:
-        """Fold a completed result into the ratings.  Must be called in
-        chronological order; `stream()` guarantees that."""
-        if not match.played:
-            return
+    def _check_order(self, match: Match) -> None:
+        """The chronological guard.  Runs for every match, played or not --
+        an unplayed fixture arriving out of order is the same data-integrity
+        failure as a played one, and skipping the check for it would let a
+        corrupted stream pass silently."""
         if self._last_date is not None and match.date < self._last_date:
             raise ValueError(
                 f"out-of-order match {match.date} after {self._last_date}: "
@@ -129,11 +165,20 @@ class EloEngine:
             )
         self._last_date = match.date
 
+    # ---- write side ------------------------------------------------------
+    def update(self, match: Match) -> None:
+        """Fold a completed result into the ratings.  Must be called in
+        chronological order; `stream()` guarantees that."""
+        self._check_order(match)
+        if not match.played:
+            return
+
         snap = self.observe(match)
         exp_h = expected_score(snap.diff)
         gd = match.home_goals - match.away_goals
         actual = 1.0 if gd > 0 else (0.5 if gd == 0 else 0.0)
-        k = self.cfg.k * (_margin_multiplier(gd) if self.cfg.goal_diff_scaling else 1.0)
+        base_k = self.cfg.k_fn(match.competition) if self.cfg.k_fn else self.cfg.k
+        k = base_k * (_margin_multiplier(gd) if self.cfg.goal_diff_scaling else 1.0)
         delta = k * (actual - exp_h)
 
         self._r[match.home] = snap.home + delta
@@ -144,15 +189,38 @@ class EloEngine:
 
     # ---- the only sanctioned traversal ----------------------------------
     def stream(self, matches: Iterable[Match]) -> Iterator[tuple[Match, RatingSnapshot]]:
-        """Yield (match, pre-match ratings) then absorb the result.
+        """Yield (match, day-start ratings), then absorb the day's results.
 
-        Every consumer in this repo goes through here.  It is the single point
-        where the observe-before-update ordering is enforced.
+        Every consumer in this repo goes through here.  Two guarantees:
+
+        * observe-before-update -- a rating can never contain its own match;
+        * day-start snapshots -- a snapshot never contains a result from the
+          match's *own date*.  Kickoff times are not in the data, so within a
+          date the sort order is alphabetical, not temporal; folding a
+          same-day result into a "pre-match" rating would be lookahead in a
+          thinner disguise.  Rating evolution itself stays sequential
+          (standard Elo); only what a consumer is shown is day-start.
+
+        Out-of-order input raises before anything from the offending match is
+        yielded.
         """
+        day: list[tuple[Match, RatingSnapshot]] = []
         for m in matches:
-            snap = self.observe(m)
-            yield m, snap
-            self.update(m)
+            if day and m.date != day[0][0].date:
+                # Flush the finished day before validating the newcomer, so a
+                # completed day is absorbed exactly once even when the very
+                # next match turns out to be out of order and raises.
+                for dm, snap in day:
+                    yield dm, snap
+                for dm, _ in day:
+                    self.update(dm)
+                day = []
+            self._check_order(m)
+            day.append((m, self.observe(m)))
+        for dm, snap in day:
+            yield dm, snap
+        for dm, _ in day:
+            self.update(dm)
 
 
 def expected_score(elo_diff: float) -> float:
