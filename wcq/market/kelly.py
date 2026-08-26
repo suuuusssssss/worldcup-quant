@@ -33,6 +33,8 @@ against different failures:
 """
 from __future__ import annotations
 
+from wcq._compat import SLOTS
+
 from dataclasses import dataclass
 
 
@@ -59,7 +61,7 @@ def expected_log_growth(p: float, decimal_odds: float, f: float) -> float:
     return p * math.log(1.0 + f * (decimal_odds - 1.0)) + (1.0 - p) * math.log(1.0 - f)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS)
 class SizingPolicy:
     fraction: float = 0.25      # quarter-Kelly by default; half is aggressive
     cap: float = 0.02           # never risk more than 2% of bankroll on one bet
@@ -81,27 +83,36 @@ def kelly_multi(probs, odds, fraction: float = 1.0) -> list[float]:
     Betting three outcomes of the same match independently is wrong: the
     outcomes are exclusive, so the positions hedge each other and the true
     joint-optimal stake is not the sum of three separate Kelly fractions.
-    This solves the exclusive-outcomes case directly by the standard
-    reserve-set algorithm: sort by expected value, admit outcomes while their
-    revised edge stays positive, and size against the remaining reserve.
+    This solves the exclusive-outcomes case by the standard reserve-set
+    algorithm (Smoczynski & Tomkins): sort by expected revenue rate p*o,
+    admit an outcome while its p*o exceeds the *current* reserve rate
+    R = (1 - sum p_admitted) / (1 - sum 1/o_admitted), then stake
+    f_i = p_i - R/o_i on each admitted outcome.
+
+    The admission test must compare against R, not against 1: R falls below 1
+    as outcomes are admitted, and legs with p*o in (R, 1] still add growth.
+    In the limiting cases -- the admitted reciprocals reaching 1 (a sub-100%
+    "arbitrage" book) or the admitted probabilities reaching 1 (every outcome
+    worth backing) -- the reserve is exactly 0 and the whole bankroll is
+    deployed at stakes p_i, which is the correct Kelly answer there, not a
+    degenerate one.
     """
     n = len(probs)
     order = sorted(range(n), key=lambda i: probs[i] * odds[i], reverse=True)
     admitted: list[int] = []
     reserve = 1.0
     p_sum = 0.0
+    r_sum = 0.0
     for i in order:
-        if probs[i] * odds[i] <= 1.0:
+        if probs[i] * odds[i] <= reserve:
             break
-        cand = admitted + [i]
-        p_tot = p_sum + probs[i]
-        r_tot = sum(1.0 / odds[j] for j in cand)
-        if r_tot >= 1.0:
+        admitted.append(i)
+        p_sum += probs[i]
+        r_sum += 1.0 / odds[i]
+        if r_sum >= 1.0 or p_sum >= 1.0:
+            reserve = 0.0
             break
-        new_reserve = (1.0 - p_tot) / (1.0 - r_tot)
-        if new_reserve <= 0.0:
-            break
-        admitted, reserve, p_sum = cand, new_reserve, p_tot
+        reserve = (1.0 - p_sum) / (1.0 - r_sum)
 
     stakes = [0.0] * n
     for i in admitted:

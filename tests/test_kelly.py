@@ -58,10 +58,13 @@ def test_shrinkage_moves_size_toward_zero():
     assert b.stake(0.60, 0.50, 2.2) < a.stake(0.60, 0.50, 2.2)
 
 
-def test_multi_outcome_never_stakes_the_whole_bankroll():
-    stakes = kelly_multi([0.45, 0.30, 0.25], [2.5, 3.5, 4.5])
+def test_multi_outcome_keeps_a_reserve_on_an_overround_book():
+    """With a real bookmaker margin (sum 1/o > 1) there is no arbitrage and
+    Kelly must keep cash back; only a sub-100% book justifies full deployment
+    (see test_multi_bets_everything_on_a_sub_100_book)."""
+    stakes = kelly_multi([0.60, 0.25, 0.15], [1.80, 3.3, 5.0])   # sum 1/o = 1.059
     assert all(s >= 0 for s in stakes)
-    assert sum(stakes) < 1.0
+    assert 0.0 < sum(stakes) < 1.0
 
 
 def test_multi_outcome_skips_negative_ev_legs():
@@ -75,3 +78,69 @@ def test_multi_outcome_matches_single_kelly_when_only_one_leg_qualifies():
     probs, odds = [0.55, 0.10, 0.35], [2.10, 3.0, 2.0]
     stakes = kelly_multi(probs, odds)
     assert stakes[0] > 0 and stakes[1] == 0.0
+
+
+def _log_growth_multi(stakes, probs, odds):
+    """E[log wealth] for simultaneous stakes on exclusive outcomes."""
+    import math
+    total = sum(stakes)
+    g = 0.0
+    for p, o, s in zip(probs, odds, stakes):
+        w = 1.0 - total + s * o
+        if w <= 0:
+            return float("-inf")
+        g += p * math.log(w)
+    return g
+
+
+def test_multi_admits_legs_with_po_below_one_but_above_reserve():
+    """Regression: the admission test must compare p*o to the *current*
+    reserve rate, not to 1.  Here every leg has p*o barely above or below 1,
+    but once the first leg is admitted the reserve drops and the others belong
+    in the bet too.  The old fixed-threshold version left most of the growth
+    on the table."""
+    from scipy.optimize import minimize
+    probs, odds = [0.45, 0.30, 0.25], [2.5, 3.5, 4.5]
+    stakes = kelly_multi(probs, odds)
+    got = _log_growth_multi(stakes, probs, odds)
+
+    res = minimize(lambda s: -_log_growth_multi(s, probs, odds),
+                   [0.1] * 3, method="SLSQP", bounds=[(0.0, 0.999)] * 3,
+                   constraints=[{"type": "ineq", "fun": lambda s: 0.999 - sum(s)}])
+    assert got == pytest.approx(-res.fun, abs=1e-4)
+
+
+def test_multi_bets_everything_on_a_sub_100_book():
+    """sum(1/o) < 1 is a theoretical arbitrage: the reserve is exactly zero
+    and Kelly deploys the whole bankroll in proportion to the probabilities."""
+    probs, odds = [0.45, 0.30, 0.25], [2.5, 3.5, 4.5]   # sum(1/o) = 0.908
+    stakes = kelly_multi(probs, odds)
+    assert sum(stakes) == pytest.approx(1.0, abs=1e-9)
+    assert stakes == pytest.approx(probs)
+    # every outcome ends with more than the starting bankroll
+    for p, o, s in zip(probs, odds, stakes):
+        assert s * o > 1.0 - 1e-9
+
+
+def test_multi_agrees_with_brute_force_on_random_books():
+    """Property test against a direct optimiser over the simplex."""
+    import random
+    from scipy.optimize import minimize
+    rng = random.Random(7)
+    for _ in range(25):
+        n = rng.choice([2, 3, 4])
+        raw = [rng.random() + 0.05 for _ in range(n)]
+        probs = [x / sum(raw) for x in raw]
+        over = rng.uniform(0.9, 1.1)
+        odds = [max(1.01, 1.0 / (p * over) * rng.uniform(0.92, 1.08)) for p in probs]
+        stakes = kelly_multi(probs, odds)
+        got = _log_growth_multi(stakes, probs, odds)
+        best = None
+        for start in (0.01, 0.1, 0.3):
+            res = minimize(lambda s: -_log_growth_multi(s, probs, odds),
+                           [start] * n, method="SLSQP", bounds=[(0.0, 0.9999)] * n,
+                           constraints=[{"type": "ineq",
+                                         "fun": lambda s: 0.9999 - sum(s)}])
+            if best is None or -res.fun > best:
+                best = -res.fun
+        assert got >= best - 1e-4, (probs, odds, stakes)

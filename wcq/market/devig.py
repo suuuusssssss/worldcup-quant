@@ -10,8 +10,10 @@ Four methods, in increasing order of realism:
 
 multiplicative  Scale all reciprocals by the same factor.  Implicitly assumes
                 margin is spread proportionally.  Simple, and wrong in a known
-                direction: it under-removes margin from favourites and
-                over-removes it from longshots.
+                direction: bookmakers shade longshots hardest, so a uniform
+                rescale removes too little margin from longshots and too much
+                from favourites -- longshots stay overstated, favourites
+                understated.
 additive        Subtract the margin equally in probability space.  Errs the
                 opposite way and can produce negative probabilities on heavy
                 favourites.
@@ -62,14 +64,22 @@ def additive(odds: Sequence[float]) -> tuple[float, ...]:
 def power(odds: Sequence[float], tol: float = 1e-12, max_iter: int = 200) -> tuple[float, ...]:
     """Solve sum(r_i ** k) = 1 for k by bisection.
 
-    Monotone in k, so bisection is guaranteed to converge and cannot blow up
-    the way Newton can when a reciprocal is near 1.  ~50 iterations to machine
-    precision is nothing next to the cost of loading the data.
+    f(k) = sum(r_i^k) - 1 is strictly decreasing with f(0) = n-1 > 0, so a
+    unique root always exists; the upper bracket doubles until it straddles
+    the root rather than assuming a fixed range.  A fixed bracket of [0.5, 3]
+    quietly failed on heavy-favourite books (r_max near 1 forces k far above
+    3) and fell back to `multiplicative` -- the exact books where the two
+    methods disagree most.  Bisection cannot blow up the way Newton can when
+    a reciprocal is near 1.
     """
     r = _reciprocals(odds)
-    lo, hi = 0.5, 3.0
     f = lambda k: sum(x ** k for x in r) - 1.0
-    if f(lo) * f(hi) > 0:
+    lo, hi = 0.0, 1.0
+    for _ in range(64):
+        if f(hi) < 0.0:
+            break
+        lo, hi = hi, hi * 2.0
+    else:                                  # pathological (r_max ~ 1.0)
         return multiplicative(odds)
     for _ in range(max_iter):
         mid = 0.5 * (lo + hi)
