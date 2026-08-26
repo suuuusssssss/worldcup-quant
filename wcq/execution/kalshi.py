@@ -35,8 +35,9 @@ The three details that actually cost money
    is the single most common Kalshi integration bug and it silently reports
    edge that does not exist.
 3. **Idempotency.**  A POST that times out may still have filled.  Every order
-   carries a deterministic client-side id derived from (ticker, side, price,
-   date), so a retry after an ambiguous failure cannot double the position.
+   carries a deterministic client-side id derived from (ticker, side, action,
+   date, intent), so a retry after an ambiguous failure -- including a
+   re-scan whose ask has since moved a cent -- cannot double the position.
 """
 from __future__ import annotations
 
@@ -44,6 +45,7 @@ import hashlib
 import json
 import math
 import random
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -68,7 +70,7 @@ class TokenBucket:
     burst, which matches how the limit is actually enforced.
     """
 
-    __slots__ = ("rate", "capacity", "_tokens", "_last", "_clock", "_sleep")
+    __slots__ = ("rate", "capacity", "_tokens", "_last", "_clock", "_sleep", "_mu")
 
     def __init__(self, rate_per_sec: float, capacity: Optional[float] = None,
                  clock: Callable[[], float] = time.monotonic,
@@ -81,18 +83,24 @@ class TokenBucket:
         self._clock = clock
         self._sleep = sleep
         self._last = clock()
+        self._mu = threading.Lock()
 
     def acquire(self, tokens: float = 1.0) -> float:
-        """Block until `tokens` are available.  Returns seconds waited."""
+        """Block until `tokens` are available.  Returns seconds waited.
+
+        The lock makes the read-modify-write on the token count atomic; the
+        sleep happens outside it so one waiter cannot stall every other
+        thread's bookkeeping."""
         waited = 0.0
         while True:
-            now = self._clock()
-            self._tokens = min(self.capacity, self._tokens + (now - self._last) * self.rate)
-            self._last = now
-            if self._tokens >= tokens:
-                self._tokens -= tokens
-                return waited
-            need = (tokens - self._tokens) / self.rate
+            with self._mu:
+                now = self._clock()
+                self._tokens = min(self.capacity, self._tokens + (now - self._last) * self.rate)
+                self._last = now
+                if self._tokens >= tokens:
+                    self._tokens -= tokens
+                    return waited
+                need = (tokens - self._tokens) / self.rate
             self._sleep(need)
             waited += need
 
@@ -199,8 +207,12 @@ class FakeTransport:
 
 
 class KalshiError(RuntimeError):
+    """Single exception type for everything the client can raise: HTTP
+    failures carry the status, transport failures (timeout, reset, DNS)
+    carry status 0 and the underlying error text."""
+
     def __init__(self, status: int, body: str):
-        super().__init__(f"HTTP {status}: {body[:400]}")
+        super().__init__(f"HTTP {status}: {body[:400]}" if status else f"transport: {body[:400]}")
         self.status = status
         self.body = body
 
@@ -297,14 +309,22 @@ class OrderRequest:
         return body
 
 
-def client_order_id(ticker: str, side: str, price_cents: int, day: str) -> str:
+def client_order_id(ticker: str, side: str, action: str, day: str,
+                    intent: str = "") -> str:
     """Deterministic idempotency key.
 
-    Derived from the trade's identity, not from a random UUID: after an
-    ambiguous timeout the retry must produce the *same* id, and a fresh random
-    one would let the venue accept the order twice.
+    Derived from the trade's *intent*, not from a random UUID and not from
+    the fill price: after an ambiguous timeout the retry must produce the
+    same id.  A random id would let the venue accept the order twice; a
+    price-derived id fails the same way one step later, because the recovery
+    path re-reads the book, and an ask that moved one cent would mint a fresh
+    key for what is the same trade.  `action` is part of the identity so a
+    buy and a later sell of the same market cannot collide, and `intent`
+    distinguishes deliberate repeat trades within a day (second scan after a
+    partial fill, say); leave it empty and the key covers one intent per
+    (ticker, side, action, day).
     """
-    raw = f"{ticker}|{side}|{price_cents}|{day}"
+    raw = f"{ticker}|{side}|{action}|{day}|{intent}"
     return "wcq-" + hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
@@ -338,27 +358,58 @@ class KalshiClient:
         self.retry = retry or RetryPolicy()
         self.dry_run = dry_run
         self._sleep = sleep
-        self._rng = rng or random.Random(0)
+        # System-seeded by default: the whole point of retry jitter is that
+        # independent clients desynchronise, and a fixed seed would hand every
+        # deployment the identical "random" schedule.  Tests inject their own.
+        self._rng = rng or random.Random()
         self.sent_orders: list[OrderRequest] = []
+
+    @staticmethod
+    def _retry_after_seconds(resp_headers: dict[str, str]) -> Optional[float]:
+        """Retry-After, tolerating case variations and the HTTP-date form
+        (which we cannot use without clock assumptions, so it maps to None
+        and the normal backoff applies)."""
+        for k, v in resp_headers.items():
+            if k.lower() == "retry-after":
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return None
+        return None
 
     def _call(self, method: str, path: str, body: Optional[dict] = None,
               query: str = "") -> dict:
         full_path = API_PREFIX + path
         raw = json.dumps(body).encode() if body is not None else None
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        if self.auth:
-            headers.update(self.auth.headers(method, full_path, raw or b""))
 
         last: Optional[Exception] = None
         for attempt in range(self.retry.max_attempts):
+            # Headers are rebuilt per attempt: RSA-PSS auth signs a timestamp,
+            # and a signature from before a backoff sleep is stale by the time
+            # the retry fires -- the server would reject every retried call.
+            headers = {"Content-Type": "application/json", "Accept": "application/json"}
+            if self.auth:
+                headers.update(self.auth.headers(method, full_path, raw or b""))
+
             self.bucket.acquire()
-            status, resp_headers, payload = self.transport.request(
-                method, f"{self.host}{full_path}{query}", headers, raw)
+            try:
+                status, resp_headers, payload = self.transport.request(
+                    method, f"{self.host}{full_path}{query}", headers, raw)
+            except OSError as e:
+                # Timeouts, resets, DNS failures.  This is the ambiguous case
+                # the deterministic client_order_id exists for: the request
+                # may have been applied, so the retry re-sends the *identical*
+                # body -- same idempotency key -- and the venue deduplicates.
+                last = KalshiError(0, f"{type(e).__name__}: {e}")
+                if attempt < self.retry.max_attempts - 1:
+                    self._sleep(self.retry.delay(attempt, None, self._rng))
+                    continue
+                raise last from e
             if 200 <= status < 300:
                 return json.loads(payload or b"{}")
             if status in self.retry.retry_status and attempt < self.retry.max_attempts - 1:
-                ra = resp_headers.get("Retry-After")
-                self._sleep(self.retry.delay(attempt, float(ra) if ra else None, self._rng))
+                ra = self._retry_after_seconds(resp_headers)
+                self._sleep(self.retry.delay(attempt, ra, self._rng))
                 last = KalshiError(status, payload.decode("utf-8", "replace"))
                 continue
             raise KalshiError(status, payload.decode("utf-8", "replace"))
@@ -399,19 +450,29 @@ class Quote:
 def scan_and_quote(client: KalshiClient, quotes: Sequence[Quote],
                    limits: Optional[RiskLimits] = None,
                    kelly_fraction: float = 0.25,
-                   bankroll_cents: int = 100_000) -> list[OrderRequest]:
+                   bankroll_cents: int = 100_000,
+                   intent: str = "") -> list[OrderRequest]:
     """Compare each model quote to the book and post where it pays after fees.
 
-    Buys YES only when the model's probability beats the *ask* it would have to
-    cross, and posts a passive limit at the ask rather than a market order, so
-    the price is known and the fill is not.  Sizing is fractional Kelly capped
-    by the risk limits; an unfilled order is a strictly better outcome than an
-    unbounded fill at an unknown price.
+    Buys YES only when the model's probability beats the *ask* it would have
+    to cross.  The order is a marketable limit priced at that ask -- it takes
+    the resting NO liquidity like a market order would, but the price is
+    capped, so a book that moved between the read and the post costs a missed
+    fill instead of a worse price.  Sizing is fractional Kelly on the
+    *fee-inclusive* cost (the same fee the entry gate charges -- sizing on raw
+    odds would systematically overbet near 50c where the fee peaks), capped by
+    the risk limits, and an unfilled order is a strictly better outcome than
+    an unbounded fill at an unknown price.
+
+    `intent` is threaded into every idempotency key: re-running the same scan
+    after a crash reuses the same keys (the venue then deduplicates), while a
+    deliberately new trading round passes a new intent.
     """
     from wcq.market.kelly import kelly_fraction as kelly_f
 
     limits = limits or RiskLimits()
     placed: list[OrderRequest] = []
+    remaining_notional = float(limits.max_open_notional_cents)
 
     for q in quotes:
         if len(placed) >= limits.max_orders_per_run:
@@ -425,22 +486,25 @@ def scan_and_quote(client: KalshiClient, quotes: Sequence[Quote],
         if ev < limits.min_edge_cents:
             continue
 
-        decimal_odds = 100.0 / ask
+        cost = ask + trading_fee_cents(ask, 1)     # what a contract really costs
+        decimal_odds = 100.0 / cost
         f = kelly_f(q.model_prob, decimal_odds) * kelly_fraction
         contracts = int(min(
-            f * bankroll_cents / max(ask, 1),
+            f * bankroll_cents / cost,
             limits.max_contracts_per_market,
             book.size_at("no", 100 - ask),      # never size past visible depth
-            limits.max_open_notional_cents / max(ask, 1),
+            remaining_notional / max(ask, 1),   # the cap spans the whole run
         ))
         if contracts < 1:
             continue
 
         order = OrderRequest(
             ticker=q.ticker, side="yes", action="buy", count=contracts,
-            price_cents=ask, client_order_id=client_order_id(q.ticker, "yes", ask, q.day),
+            price_cents=ask,
+            client_order_id=client_order_id(q.ticker, "yes", "buy", q.day, intent),
         )
         client.place_order(order)
         placed.append(order)
+        remaining_notional -= contracts * ask
 
     return placed
