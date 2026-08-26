@@ -38,6 +38,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -49,17 +50,17 @@ struct Team { std::string name; double elo; };
 
 // A 16-team bracket in bracket order (1 plays 2, 3 plays 4, ...).
 // Ratings are produced by wcq/model/elo.py from real match history; regenerate
-// with `python3 scripts/export_bracket.py`.
+// with `python3 scripts/run_tournament.py --as-of <date> --export-cpp <file>`.
 std::vector<Team> default_bracket() {
     return {
-        {"Spain", 2130.5},      {"Morocco", 1893.9},
-        {"France", 2039.6},     {"Japan", 1897.8},
-        {"Argentina", 2123.5},  {"Mexico", 1885.0},
-        {"England", 2024.3},    {"Switzerland", 1868.6},
-        {"Brazil", 2031.2},     {"Ecuador", 1858.5},
-        {"Portugal", 1987.1},   {"Italy", 1871.7},
-        {"Colombia", 2001.6},   {"Germany", 1944.9},
-        {"Netherlands", 1964.8},{"Belgium", 1956.6},
+        {"Spain", 2015.6},      {"Senegal", 1829.6},
+        {"Argentina", 1971.8},  {"Nigeria", 1829.8},
+        {"France", 1925.9},     {"Germany", 1836.2},
+        {"England", 1918.1},    {"Netherlands", 1836.7},
+        {"Morocco", 1912.8},    {"Norway", 1838.9},
+        {"Japan", 1878.2},      {"Ecuador", 1851.2},
+        {"Colombia", 1877.1},   {"Mexico", 1866.7},
+        {"Brazil", 1876.3},     {"Portugal", 1875.5},
     };
 }
 
@@ -124,14 +125,18 @@ std::vector<double> exact_title_probs(const std::vector<Team>& t) {
     return reach;
 }
 
-constexpr long CHUNK = 100'000;   // simulations per work unit
+// 64-bit everywhere sims are counted: `long` is 32-bit on LLP64 platforms
+// (Windows), where a 10-billion-sim run would overflow without a warning.
+using i64 = long long;
 
-void run_chunk(long chunk_id, long sims, const std::vector<double>& w, size_t n,
-               uint64_t base_seed, std::vector<long>& out) {
+constexpr i64 CHUNK = 100'000;   // simulations per work unit
+
+void run_chunk(i64 chunk_id, i64 sims, const std::vector<double>& w, size_t n,
+               uint64_t base_seed, std::vector<i64>& out) {
     uint64_t mix = base_seed ^ (uint64_t)chunk_id;
     Xoshiro256pp rng(splitmix64(mix));
     std::vector<int> alive(n);
-    for (long s = 0; s < sims; ++s) {
+    for (i64 s = 0; s < sims; ++s) {
         for (size_t i = 0; i < n; ++i) alive[i] = (int)i;
         size_t remaining = n;
         while (remaining > 1) {
@@ -148,21 +153,32 @@ void run_chunk(long chunk_id, long sims, const std::vector<double>& w, size_t n,
 }  // namespace
 
 int main(int argc, char** argv) {
-    long sims = 10'000'000;
+    i64 sims = 10'000'000;
     int threads = (int)std::thread::hardware_concurrency();
     uint64_t seed = 0xC0FFEEULL;
     bool check = false;
 
+    // Strict parsing: a typo like --sim 1000000 must be a hard error, not a
+    // silent 10M-simulation run whose output looks plausible.
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        auto val = [&]() -> const char* { return (i + 1 < argc) ? argv[++i] : "0"; };
-        if (a == "--sims") sims = std::atol(val());
+        auto val = [&]() -> const char* {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "error: %s requires a value\n", a.c_str());
+                std::exit(2);
+            }
+            return argv[++i];
+        };
+        if (a == "--sims") sims = std::strtoll(val(), nullptr, 10);
         else if (a == "--threads") threads = std::atoi(val());
         else if (a == "--seed") seed = std::strtoull(val(), nullptr, 10);
         else if (a == "--check") check = true;
         else if (a == "--help") {
             std::printf("usage: %s [--sims N] [--threads T] [--seed S] [--check]\n", argv[0]);
             return 0;
+        } else {
+            std::fprintf(stderr, "error: unknown flag %s (see --help)\n", a.c_str());
+            return 2;
         }
     }
     if (threads < 1) threads = 1;
@@ -176,9 +192,9 @@ int main(int argc, char** argv) {
     }
     const std::vector<double> w = build_win_matrix(teams);
 
-    const long n_chunks = (sims + CHUNK - 1) / CHUNK;
-    std::atomic<long> cursor{0};
-    std::vector<long> totals(n, 0);
+    const i64 n_chunks = (sims + CHUNK - 1) / CHUNK;
+    std::atomic<i64> cursor{0};
+    std::vector<i64> totals(n, 0);
     std::mutex merge_mu;
 
     const auto t0 = std::chrono::steady_clock::now();
@@ -186,11 +202,11 @@ int main(int argc, char** argv) {
     pool.reserve((size_t)threads);
     for (int t = 0; t < threads; ++t) {
         pool.emplace_back([&]() {
-            std::vector<long> local(n, 0);   // thread-private: no false sharing
+            std::vector<i64> local(n, 0);   // thread-private: no false sharing
             for (;;) {
-                const long c = cursor.fetch_add(1, std::memory_order_relaxed);
+                const i64 c = cursor.fetch_add(1, std::memory_order_relaxed);
                 if (c >= n_chunks) break;
-                const long todo = std::min<long>(CHUNK, sims - c * CHUNK);
+                const i64 todo = std::min<i64>(CHUNK, sims - c * CHUNK);
                 run_chunk(c, todo, w, n, seed, local);
             }
             std::lock_guard<std::mutex> lk(merge_mu);
@@ -208,8 +224,8 @@ int main(int argc, char** argv) {
     std::sort(order.begin(), order.end(),
               [&](size_t a, size_t b) { return totals[a] > totals[b]; });
 
-    std::printf("=== %ld simulations, %d threads, %.2fs (%.1fM sims/s) ===\n",
-                sims, threads, secs, sims / secs / 1e6);
+    std::printf("=== %lld simulations, %d threads, %.2fs (%.1fM sims/s) ===\n",
+                sims, threads, secs, (double)sims / secs / 1e6);
     if (check) std::printf("%3s %-14s %9s %9s %8s\n", "#", "team", "mc", "exact", "z");
     else       std::printf("%3s %-14s %9s\n", "#", "team", "mc");
 
@@ -218,8 +234,15 @@ int main(int argc, char** argv) {
         const size_t i = order[k];
         const double p = (double)totals[i] / (double)sims;
         if (check) {
-            const double se = std::sqrt(p * (1.0 - p) / (double)sims);
-            const double z = se > 0 ? (p - exact[i]) / se : 0.0;
+            // The standard error comes from the EXACT probability, i.e. the
+            // null hypothesis being tested.  Using the MC estimate would make
+            // the yardstick collapse exactly when the simulator is most
+            // wrong: a team with zero MC wins would get se = 0, z = 0, and a
+            // clean bill of health for the precise bug class --check exists
+            // to catch.
+            const double se = std::sqrt(exact[i] * (1.0 - exact[i]) / (double)sims);
+            const double z = se > 0 ? (p - exact[i]) / se
+                                    : (p > 0 ? std::numeric_limits<double>::infinity() : 0.0);
             max_z = std::max(max_z, std::fabs(z));
             std::printf("%3zu %-14s %8.4f%% %8.4f%% %8.2f\n",
                         k + 1, teams[i].name.c_str(), 100 * p, 100 * exact[i], z);
