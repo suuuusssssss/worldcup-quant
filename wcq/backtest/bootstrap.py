@@ -79,11 +79,19 @@ class _Collapsed:
 
 
 def _collapse(bets: Sequence[Bet]) -> _Collapsed:
+    """Collapse bets to per-match clusters, ordered chronologically.
+
+    The explicit sort matters for the *stationary block* bootstrap, whose
+    entire premise is that adjacent clusters are adjacent in time; feeding it
+    clusters in arbitrary insertion order would silently degrade it to an
+    i.i.d. resample.  Match.key() starts with the date, so sorting keys is a
+    chronological sort with a deterministic tiebreak."""
     groups: dict[tuple, list[Bet]] = defaultdict(list)
     for b in bets:
         groups[b.match.key()].append(b)
     pnl, stake, ret, cnt = [], [], [], []
-    for g in groups.values():
+    for k in sorted(groups):
+        g = groups[k]
         pnl.append(sum(b.pnl for b in g))
         stake.append(sum(b.stake for b in g))
         ret.append(sum(b.unit_return for b in g))
@@ -107,12 +115,17 @@ def _resample_stats(c: _Collapsed, idx: np.ndarray) -> tuple[np.ndarray, np.ndar
 
 def _finish(obs_roi, obs_mean, rois, means, alpha, n_resamples, k) -> BootstrapResult:
     null = means - means.mean()          # recentre under H0: mean return = 0
+    # Add-one smoothing: with B resamples the smallest honest p-value is
+    # 1/(B+1), not 0.  A p of exactly zero would also pass through the Sidak
+    # deflation unchanged, laundering "smaller than our resolution" into
+    # "impossible under the null".
+    exceed = int((np.abs(null) >= abs(obs_mean)).sum())
     return BootstrapResult(
         observed_roi=obs_roi,
         observed_mean_return=obs_mean,
         roi_ci=(float(np.quantile(rois, alpha / 2)), float(np.quantile(rois, 1 - alpha / 2))),
         mean_return_ci=(float(np.quantile(means, alpha / 2)), float(np.quantile(means, 1 - alpha / 2))),
-        p_value=float((np.abs(null) >= abs(obs_mean)).mean()),
+        p_value=(exceed + 1) / (len(means) + 1),
         n_resamples=n_resamples,
         n_clusters=k,
     )
