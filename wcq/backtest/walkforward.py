@@ -20,6 +20,8 @@ already been scored.
 """
 from __future__ import annotations
 
+from wcq._compat import SLOTS
+
 import datetime as dt
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Optional, Sequence
@@ -34,7 +36,7 @@ from wcq.model.poisson import PoissonParams, match_probs
 from wcq.schema import OUTCOMES, OUTCOME_INDEX, Bet, Match, Prediction
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS)
 class WalkForwardConfig:
     refit_every_days: int = 365
     min_train_matches: int = 2_000
@@ -78,7 +80,7 @@ def run_walk_forward(matches: Sequence[Match], cfg: WalkForwardConfig | None = N
     params: PoissonParams | None = None
     param_history: list[tuple[dt.date, PoissonParams, dict]] = []
     next_refit: dt.date | None = None
-    pending: list[tuple[float, int, int, bool]] = []
+    pending: list[tuple[dt.date, tuple[float, int, int, bool]]] = []
 
     predictions: list[Prediction] = []
     skipped = 0
@@ -88,15 +90,31 @@ def run_walk_forward(matches: Sequence[Match], cfg: WalkForwardConfig | None = N
         if progress and i % 20_000 == 0:
             progress(i, total)
 
-        # -- refit boundary: fold in everything from the period just ended,
-        #    then re-estimate on data that is now strictly in the past.
+        # Fixtures without a result cannot train or be scored.  Guarding here
+        # keeps a scheduled-but-unplayed row from planting a None goal count
+        # in the training set, where it would blow up (or worse, not) three
+        # calls away from the cause.
+        if not m.played:
+            skipped += 1
+            continue
+
+        # -- refit boundary: fold in everything strictly older than today,
+        #    then re-estimate on data that is now firmly in the past.  Rows
+        #    from *this* date stay pending -- within a date the sort order is
+        #    alphabetical, not temporal, so "earlier today" is not "earlier".
         if next_refit is None or m.date >= next_refit:
-            train_rows.extend(pending)
-            pending = []
+            still_pending = [(d, r) for d, r in pending if d >= m.date]
+            train_rows.extend(r for d, r in pending if d < m.date)
+            pending = still_pending
             if len(train_rows) >= cfg.min_train_matches:
                 window = train_rows
                 if cfg.rolling_window_matches:
-                    window = train_rows[-cfg.rolling_window_matches:]
+                    # The window never undercuts the training floor: a rolling
+                    # window smaller than min_train_matches would silently
+                    # re-enable exactly the small-sample fits the floor exists
+                    # to prevent.
+                    keep = max(cfg.rolling_window_matches, cfg.min_train_matches)
+                    window = train_rows[-keep:]
                 params, info = fit(build_training_set(window), start=params)
                 param_history.append((m.date, params, info))
             next_refit = m.date + dt.timedelta(days=cfg.refit_every_days)
@@ -105,7 +123,7 @@ def run_walk_forward(matches: Sequence[Match], cfg: WalkForwardConfig | None = N
 
         if params is None or snap.n_home < cfg.burn_in_matches or snap.n_away < cfg.burn_in_matches:
             skipped += 1
-            pending.append(row)
+            pending.append((m.date, row))
             continue
 
         probs = match_probs(snap.diff, params, m.neutral)
@@ -113,7 +131,7 @@ def run_walk_forward(matches: Sequence[Match], cfg: WalkForwardConfig | None = N
             match=m, probs=probs, home_rating=snap.home, away_rating=snap.away,
             n_prior_home=snap.n_home, n_prior_away=snap.n_away,
         ))
-        pending.append(row)
+        pending.append((m.date, row))
 
     return WalkForwardResult(predictions, param_history, skipped)
 
@@ -127,6 +145,12 @@ def generate_bets(predictions: Iterable[Prediction], policy: SizingPolicy | None
     positions -- they partially hedge, and counting them as two observations
     inflates the apparent sample size, which is exactly the quantity every
     significance test depends on.
+
+    With `one_bet_per_match=False` each qualifying outcome is sized by the
+    independent single-outcome Kelly formula, which overstates the joint
+    stake on exclusive outcomes; `wcq.market.kelly.kelly_multi` solves the
+    joint problem properly if simultaneous legs are actually wanted.  The
+    clustered bootstrap treats the match as the resampling unit either way.
     """
     policy = policy or SizingPolicy()
     bets: list[Bet] = []

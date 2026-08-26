@@ -61,6 +61,29 @@ def test_predictions_do_not_change_when_the_future_is_rewritten(synthetic_season
     assert a == b, "rewriting future results changed a past prediction"
 
 
+def test_unplayed_fixtures_are_skipped_not_trained_on():
+    """A scheduled-but-unplayed fixture has no goals.  It must be counted and
+    stepped over -- not scored, and above all not appended to the training
+    rows, where a None goal count would detonate inside the MLE three calls
+    away from the cause."""
+    from wcq.schema import Match
+    ms = []
+    for d in range(300):
+        ms.append(make_match(d, f"T{d % 8}", f"T{(d + 3) % 8}", d % 4, (d + 1) % 3))
+    ms.append(Match(date=dt.date(2020, 1, 1) + dt.timedelta(days=300),
+                    home="T0", away="T1", competition="T"))     # unplayed
+    for d in range(301, 340):
+        ms.append(make_match(d, f"T{d % 8}", f"T{(d + 3) % 8}", d % 4, (d + 1) % 3))
+
+    with_fixture = run_walk_forward(ms, CFG)
+    without = run_walk_forward([m for m in ms if m.played], CFG)
+    assert all(p.match.played for p in with_fixture.predictions)
+    assert with_fixture.skipped == without.skipped + 1
+    a = [(p.match.key(), p.probs) for p in with_fixture.predictions]
+    b = [(p.match.key(), p.probs) for p in without.predictions]
+    assert a == b, "an unplayed fixture changed the played matches' predictions"
+
+
 def test_refits_happen_and_parameters_move(synthetic_season):
     res = run_walk_forward(synthetic_season, CFG)
     assert len(res.param_history) >= 2
