@@ -1,0 +1,21 @@
+=== 20000000 simulations, 2 threads, 1.30s (15.4M sims/s) ===
+  # team                  mc     exact        z
+  1 Spain           22.4883%  22.4909%    -0.28
+  2 Argentina       21.8341%  21.8423%    -0.89
+  3 Brazil          11.2981%  11.3000%    -0.28
+  4 France           8.3657%   8.3589%     1.10
+  5 England          7.4965%   7.4853%     1.91
+  6 Colombia         6.7047%   6.7009%     0.69
+  7 Portugal         6.4441%   6.4435%     0.10
+  8 Netherlands      4.0377%   4.0415%    -0.86
+  9 Belgium          3.5643%   3.5636%     0.17
+ 10 Germany          2.8669%   2.8727%    -1.56
+ 11 Italy            1.0213%   1.0202%     0.50
+ 12 Japan            0.9229%   0.9262%    -1.53
+ 13 Morocco          0.8066%   0.8050%     0.82
+ 14 Ecuador          0.7890%   0.7892%    -0.10
+ 15 Mexico           0.7404%   0.7407%    -0.18
+ 16 Switzerland      0.6194%   0.6191%     0.15
+
+largest |z| vs exact: 1.91  (consistent)
+note: the exact column is O(n^2) and took microseconds. MC is here for the models where no such recursion exists.

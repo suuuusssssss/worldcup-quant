@@ -1,0 +1,57 @@
+loaded 230,554 matches (2000-07-28 .. 2025-06-01) in 3.2s
+  ..0/230,554
+  ..20,000/230,554
+  ..40,000/230,554
+  ..60,000/230,554
+  ..80,000/230,554
+  ..100,000/230,554
+  ..120,000/230,554
+  ..140,000/230,554
+  ..160,000/230,554
+  ..180,000/230,554
+  ..200,000/230,554
+  ..220,000/230,554
+walk-forward: 221,391 scored, 9,163 skipped (burn-in / no params) in 26.8s
+refits: 24
+  final params @ 2024-08-06: mu=0.243 beta=0.783 gamma=0.004 rho=-0.0447  logL/match=-2.8939
+
+=== Forecast quality (out-of-sample, walk-forward) ===
+                           model   base rate   uniform
+log loss                  1.0258      1.0711    1.0986
+Brier                     0.6156      0.6476    0.6667
+RPS                       0.2110      0.2264    0.2222
+
+=== Model vs market on the 219,273 priced matches ===
+                           model    market      base                   verdict
+log loss                  1.0257    1.0053    1.0712             MARKET BETTER
+Brier                     0.6155    0.6017    0.6476             MARKET BETTER
+RPS                       0.2109    0.2046    0.2264             MARKET BETTER
+market ECE 0.0020  vs model ECE 0.0068
+
+expected calibration error : 0.0068
+        bucket         n   predicted   observed      gap
+  [0.0,0.1)       8,308       0.074      0.069   -0.005
+  [0.1,0.2)      59,324       0.162      0.165   +0.003
+  [0.2,0.3)     309,955       0.260      0.266   +0.006
+  [0.3,0.4)     106,861       0.349      0.345   -0.004
+  [0.4,0.5)      91,780       0.448      0.439   -0.009
+  [0.5,0.6)      55,381       0.544      0.529   -0.015
+  [0.6,0.7)      22,741       0.641      0.636   -0.005
+  [0.7,0.8)       7,826       0.741      0.761   +0.020
+  [0.8,0.9)       1,926       0.834      0.857   +0.023
+  [0.9,1.0)          71       0.915      0.887   -0.027
+
+=== Betting backtest (de-vig=shin, min edge=3%, 0.25-Kelly, cap=2%) ===
+matches with a price : 219,273
+bets placed          : 151,189
+hit rate             : 30.19%
+total staked         : 2181.47 bankroll units
+total P&L            : -216.567 units
+ROI on stake         : -9.93%
+mean unit return     : -0.1011
+t-stat (NOT Sharpe)  : -24.88
+max drawdown         : 216.876 units
+
+=== Inference (4,000 resamples) ===
+clustered by match   : ROI -9.93%  95% CI [-10.78%, -9.10%]  p=0.0000  (REJECT H0, 151,189 clusters)
+stationary block     : ROI -9.93%  95% CI [-10.74%, -9.04%]  p=0.0000  (REJECT H0, 151,189 clusters)

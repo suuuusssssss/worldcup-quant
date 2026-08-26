@@ -1,0 +1,32 @@
+loaded 49,520 matches (1872-11-30 .. 2026-07-19) in 0.3s
+walk-forward: 46,475 scored, 3,045 skipped (burn-in / no params) in 11.4s
+refits: 91
+  final params @ 2026-01-14: mu=0.318 beta=1.499 gamma=-0.073 rho=-0.0456  logL/match=-3.1385
+
+=== Forecast quality (out-of-sample, walk-forward) ===
+                           model   base rate   uniform
+log loss                  0.9346      1.0462    1.0986
+Brier                     0.5524      0.6302    0.6667
+RPS                       0.1880      0.2259    0.2222
+
+=== Model vs market ===
+no bookmaker prices attached to this dataset -- forecast quality only.
+Historical closing odds for international fixtures are not in any of the
+free archives this project uses, which is why the betting backtest runs on
+club data. Stating that plainly is better than quietly backtesting against
+prices that were never real.
+
+expected calibration error : 0.0188
+        bucket         n   predicted   observed      gap
+  [0.0,0.1)      12,622       0.057      0.077   +0.020
+  [0.1,0.2)      27,293       0.157      0.170   +0.013
+  [0.2,0.3)      42,797       0.242      0.258   +0.016
+  [0.3,0.4)      13,570       0.349      0.339   -0.010
+  [0.4,0.5)      12,259       0.449      0.437   -0.012
+  [0.5,0.6)      10,653       0.548      0.518   -0.030
+  [0.6,0.7)       8,351       0.648      0.624   -0.024
+  [0.7,0.8)       6,105       0.747      0.713   -0.033
+  [0.8,0.9)       3,797       0.846      0.789   -0.057
+  [0.9,1.0)       1,978       0.943      0.896   -0.047
+
+no prices -> no betting backtest. Done.
