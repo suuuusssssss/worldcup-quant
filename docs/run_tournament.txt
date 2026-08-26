@@ -1,24 +1,26 @@
 49,416 international matches through 2026-06-10 (cutoff 2026-06-11)
 
-exact DP: 0.27 ms   Monte Carlo (1,000,000 sims): 1.20 s   speed-up 4,468x
+exact DP: 0.09 ms   Monte Carlo (2,000,000 sims): 0.26 s   speed-up 2,729x
 
   # team                 elo    title       mc      z  quarter     semi    final
-  1 Argentina           1900   0.1516   0.1508  -2.23    0.683    0.388    0.240
-  2 Spain               1891   0.1360   0.1360   0.16    0.664    0.362    0.220
-  3 Brazil              1839   0.0806   0.0808   0.94    0.591    0.319    0.148
-  4 France              1836   0.0776   0.0775  -0.56    0.584    0.312    0.143
-  5 Morocco             1827   0.0757   0.0763   2.20    0.569    0.306    0.161
-  6 Colombia            1817   0.0660   0.0661   0.47    0.550    0.283    0.145
-  7 England             1816   0.0639   0.0640   0.25    0.541    0.273    0.141
-  8 Portugal            1813   0.0594   0.0597   1.51    0.501    0.258    0.132
-  9 Japan               1812   0.0588   0.0583  -1.92    0.499    0.256    0.131
- 10 Algeria             1787   0.0418   0.0418  -0.37    0.459    0.213    0.101
- 11 Germany             1782   0.0393   0.0392  -0.13    0.450    0.209    0.097
- 12 Netherlands         1779   0.0374   0.0373  -0.17    0.431    0.202    0.093
- 13 Belgium             1777   0.0323   0.0324   0.77    0.416    0.187    0.071
- 14 Iran                1775   0.0312   0.0310  -1.22    0.409    0.183    0.069
- 15 Senegal             1772   0.0254   0.0254   0.45    0.336    0.128    0.056
- 16 Mexico              1767   0.0232   0.0233   0.67    0.317    0.121    0.052
+  1 Spain               2016   0.2112   0.2110  -0.65    0.745    0.461    0.307
+  2 Argentina           1972   0.1342   0.1346   1.67    0.694    0.349    0.212
+  3 France              1926   0.0881   0.0881  -0.23    0.626    0.348    0.155
+  4 Morocco             1913   0.0866   0.0868   0.81    0.605    0.343    0.190
+  5 England             1918   0.0800   0.0799  -0.38    0.615    0.330    0.143
+  6 Japan               1878   0.0547   0.0545  -1.20    0.539    0.265    0.134
+  7 Colombia            1877   0.0524   0.0528   2.30    0.515    0.258    0.129
+  8 Brazil              1876   0.0512   0.0510  -1.57    0.501    0.254    0.127
+  9 Portugal            1875   0.0506   0.0503  -1.69    0.499    0.252    0.125
+ 10 Mexico              1867   0.0449   0.0450   0.96    0.485    0.236    0.114
+ 11 Ecuador             1851   0.0364   0.0365   0.57    0.461    0.209    0.098
+ 12 Norway              1839   0.0292   0.0292  -0.14    0.395    0.182    0.082
+ 13 Netherlands         1837   0.0236   0.0237   0.63    0.385    0.162    0.053
+ 14 Germany             1836   0.0232   0.0231  -0.49    0.374    0.160    0.052
+ 15 Nigeria             1830   0.0172   0.0170  -2.42    0.306    0.097    0.040
+ 16 Senegal             1830   0.0165   0.0166   0.93    0.255    0.093    0.038
 
-largest |z| vs exact: 2.23
-to resolve the favourite to +/-0.1pp you would need 494,020 simulations; the DP is exact in milliseconds.
+largest |z| vs exact: 2.42
+to resolve the favourite to +/-0.1pp you would need 640,038 simulations; the DP is exact in milliseconds.
+
+wrote C++ bracket literal to /private/tmp/claude-501/-Users-susanxiong-Desktop-worldcup-quant/09ee3759-0851-403d-92f3-57d71d07ce7e/scratchpad/bracket.inc

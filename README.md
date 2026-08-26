@@ -5,7 +5,7 @@ statistical model is the signal, and the disagreement between them is the
 trade.** The interesting part is not the model — it is the machinery that
 tells you honestly whether the model has anything.
 
-**Headline result: it does not, and the project can prove it on 219,271
+**Headline result: it does not, and the project can prove it on 219,273
 matches.** That is the finding, and it is reported here rather than buried.
 
 ---
@@ -30,7 +30,8 @@ the time. That is the property Kelly sizing actually requires, and it holds.
 
 ### And the market is still better
 
-On the 219,271 matches that carry a real bookmaker price:
+On the 219,273 matches that carry a real bookmaker price (Bet365's own
+pre-match 1X2 line -- see the data notes below on pre-match vs closing):
 
 | scoring rule | model | market (vig-free) | verdict |
 |---|---|---|---|
@@ -48,13 +49,16 @@ where all the money is.
 de-vig = Shin, edge > 3%, quarter-Kelly, 2% cap:
 
 ```
-bets placed          : 151,187
+bets placed          : 151,186
 hit rate             : 30.19%
 ROI on stake         : -9.93%
 t-stat               : -24.88
-clustered bootstrap  : 95% CI [-10.79%, -9.07%]   p = 0.0000
-stationary block     : 95% CI [-10.74%, -9.13%]   p = 0.0000
+clustered bootstrap  : 95% CI [-10.78%, -9.08%]   p = 0.0002
+stationary block     : 95% CI [-10.72%, -9.05%]   p = 0.0004
 ```
+
+(Those p-values are add-one smoothed: with 5,000 resamples the smallest
+honest p is 1/(B+1), not zero.)
 
 This is not an underpowered null. It is a confident, tightly-bounded negative.
 
@@ -65,11 +69,11 @@ top-5 European leagues:
 
 | de-vig | edge > | bets | ROI | raw p | **deflated p** |
 |---|---|---|---|---|---|
-| multiplicative | 2% | 28,553 | −8.35% | 0.0000 | 0.0000 |
-| multiplicative | 8% | 7,471 | −7.75% | 0.0000 | 0.0000 |
-| multiplicative | 12% | 2,229 | −7.37% | 0.0080 | **0.3033** |
-| shin | 6% | 12,768 | −9.53% | 0.0000 | 0.0000 |
-| shin | 12% | 2,182 | −8.35% | 0.0127 | **0.4365** |
+| multiplicative | 2% | 28,553 | −8.35% | 0.0005 | 0.0222 |
+| multiplicative | 8% | 7,473 | −7.77% | 0.0005 | 0.0222 |
+| multiplicative | 12% | 2,229 | −7.37% | 0.0085 | **0.3188** |
+| shin | 6% | 12,767 | −9.53% | 0.0005 | 0.0222 |
+| shin | 12% | 2,182 | −8.35% | 0.0145 | **0.4816** |
 
 ROI sits between −7% and −10% no matter what you turn. If the model had a
 genuine-but-small edge, a higher threshold would select better bets and ROI
@@ -79,9 +83,11 @@ configurations is not a discovery.
 
 ### International matches, where the model does better
 
-49,520 matches since 1872, 46,475 scored: log loss **0.9346** vs base rate
-1.0462. But calibration degrades at the top — on fixtures where it says 94%,
-the favourite wins 90%. The model is **overconfident on heavy favourites**,
+49,520 matches since 1872, 46,475 scored: log loss **0.9368** vs base rate
+1.0462, with K weighted by tournament importance (a World Cup final moves a
+rating three times as far as a friendly — the eloratings.net schedule). But
+calibration degrades at the top — on fixtures where it says 95%, the
+favourite wins 89%. The model is **overconfident on heavy favourites**,
 which is exactly the population a betting strategy concentrates in.
 
 ---
@@ -110,7 +116,7 @@ cpp/mc_tournament.cpp    multithreaded simulator, deterministic, self-checking
 
 | what | source | rows |
 |---|---|---|
-| international results | [martj42/international_results](https://github.com/martj42/international_results) | 49,520 (1872–2026) |
+| international results | [martj42/international_results](https://github.com/martj42/international_results) (the well-known Kaggle dataset; fetched from its GitHub home) | 49,520 (1872–2026) |
 | club results + Bet365 1X2 prices | [football-data.co.uk](https://www.football-data.co.uk/) via [xgabora mirror](https://github.com/xgabora/Club-Football-Match-Data-2000-2025) | 230,554, of which 227,515 priced |
 
 `wcq/data/loaders.py` also carries a parser for raw football-data.co.uk season
@@ -125,10 +131,14 @@ stated rather than papered over.
 
 ### The causality guarantee
 
-Ratings are computed here rather than downloaded, on purpose. A published
-rating table is a snapshot series, and joining a match to "the nearest
-snapshot" is exactly where lookahead leaks in: a snapshot dated the 15th
-already contains results from the 1st through the 14th.
+Ratings are computed here rather than downloaded, on purpose -- the same
+World Football Elo methodology that [eloratings.net](https://www.eloratings.net/)
+publishes (margin-of-victory K scaling, home advantage, neutral venues), but
+recomputed match by match so that the rating used for a fixture provably
+predates it. A published rating table is a snapshot series, and joining a
+match to "the nearest snapshot" is exactly where lookahead leaks in: a
+snapshot dated the 15th already contains results from the 1st through the
+14th.
 
 `EloEngine.stream()` is the only sanctioned traversal. It yields the pre-match
 snapshot, *then* folds in the result, so a rating cannot contain its own match.
@@ -181,12 +191,16 @@ wrong in the output.
 
 ```
 $ ./cpp/mc_tournament --sims 20000000 --threads 2 --check
-=== 20000000 simulations, 2 threads, 1.31s (15.3M sims/s) ===
-  1 Spain           22.4883%  22.4909%    -0.28
-  2 Argentina       21.8341%  21.8423%    -0.89
+=== 20000000 simulations, 2 threads, 0.22s (90.8M sims/s) ===
+  1 Spain           21.1068%  21.1184%    -1.27
+  2 Argentina       13.4331%  13.4190%     1.86
   ...
-largest |z| vs exact: 1.91  (consistent)
+largest |z| vs exact: 1.86  (consistent)
 ```
+
+The z-scores are measured against the *exact* probability's standard error,
+so a team the simulator never crowns cannot hide behind a zero-width
+yardstick.
 
 ### C++ concurrency choices
 
@@ -231,7 +245,7 @@ from email/password JWT to RSA-PSS request signing.
 ```bash
 pip install -e ".[dev]"
 make data          # ~50 MB, cached and content-addressed
-make test          # 116 tests, no network, ~3s
+make test          # 155 tests, no network, ~2s
 make backtest      # the headline numbers, ~90s
 make sweep         # 45 configurations with deflated p-values
 make cpp bench     # determinism + throughput + exact cross-check
