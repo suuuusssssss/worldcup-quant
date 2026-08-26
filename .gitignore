@@ -1,12 +1,10 @@
-# Python
 __pycache__/
-*.pyc
-
-# C++ build artifacts
-mc_tournament
-*.o
-*.out
-
-# misc
-*.pdf
-.DS_Store
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+cpp/mc_tournament
+cpp/mc_tournament_debug
+docs/*.json
+.cache/
