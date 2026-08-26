@@ -24,14 +24,23 @@ product so a whole season is vectorised rather than looped in Python.
 """
 from __future__ import annotations
 
+from wcq._compat import SLOTS
+
+import math
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 
-MAX_GOALS = 10          # P(11+ goals for one side) < 1e-9 at these rates
+MAX_GOALS = 10
+"""Floor for the scoreline grid, not a cap: `score_matrix` grows the grid
+with the scoring rates so that the truncated tail stays below ~1e-9 even at
+extreme Elo gaps.  A fixed grid of 10 is fine at league rates (lambda ~1.5)
+but at lambda = 6 it silently discards ~4% of the probability mass, which
+biases every derived number in one direction."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS)
 class PoissonParams:
     mu: float = 0.10        # log baseline goals per team per match
     beta: float = 1.05      # sensitivity of log-goals to a 400-point Elo gap
@@ -83,12 +92,25 @@ def _tau(lam: float, mu: float, rho: float, n: int = MAX_GOALS) -> np.ndarray:
     return t
 
 
-def score_matrix(lam_h: float, lam_a: float, rho: float = 0.0, n: int = MAX_GOALS) -> np.ndarray:
+def _grid_size(lam_h: float, lam_a: float) -> int:
+    """Grid bound with a truncated tail below ~1e-9 at any rate: mean plus
+    seven standard deviations, floored at MAX_GOALS."""
+    m = max(lam_h, lam_a)
+    return max(MAX_GOALS, int(math.ceil(m + 7.0 * math.sqrt(m) + 2.0)))
+
+
+def score_matrix(lam_h: float, lam_a: float, rho: float = 0.0,
+                 n: Optional[int] = None) -> np.ndarray:
     """Joint P(home=i, away=j) as an (n+1) x (n+1) matrix, renormalised.
 
-    Renormalisation matters twice over: the grid is truncated at `n`, and the
-    tau correction does not preserve total mass exactly.
+    `n` defaults to an adaptive bound (see `_grid_size`); pass it explicitly
+    only to reproduce a fixed-grid computation.  The renormalisation exists
+    for the truncation (and the clip below): the Dixon-Coles tau itself
+    preserves total mass exactly -- the four cell corrections cancel by
+    construction -- so it needs no rescue here.
     """
+    if n is None:
+        n = _grid_size(lam_h, lam_a)
     ph = _poisson_pmf_grid(lam_h, n)
     pa = _poisson_pmf_grid(lam_a, n)
     m = np.outer(ph, pa)
@@ -98,9 +120,10 @@ def score_matrix(lam_h: float, lam_a: float, rho: float = 0.0, n: int = MAX_GOAL
     return m / m.sum()
 
 
-def outcome_probs(lam_h: float, lam_a: float, rho: float = 0.0) -> tuple[float, float, float]:
+def outcome_probs(lam_h: float, lam_a: float, rho: float = 0.0,
+                  n: Optional[int] = None) -> tuple[float, float, float]:
     """(P(home win), P(draw), P(away win)) by summing the scoreline grid."""
-    m = score_matrix(lam_h, lam_a, rho)
+    m = score_matrix(lam_h, lam_a, rho, n)
     draw = float(np.trace(m))
     home = float(np.tril(m, -1).sum())     # i > j
     away = float(np.triu(m, 1).sum())      # i < j
@@ -113,10 +136,11 @@ def match_probs(elo_diff: float, params: PoissonParams, neutral: bool = False) -
     return outcome_probs(float(lam_h), float(lam_a), params.rho)
 
 
-def over_under(lam_h: float, lam_a: float, line: float = 2.5, rho: float = 0.0) -> tuple[float, float]:
+def over_under(lam_h: float, lam_a: float, line: float = 2.5, rho: float = 0.0,
+               n: Optional[int] = None) -> tuple[float, float]:
     """P(total goals > line), P(total < line).  Lines are half-goals so there
     is no push to handle."""
-    m = score_matrix(lam_h, lam_a, rho)
+    m = score_matrix(lam_h, lam_a, rho, n)
     n = m.shape[0]
     idx = np.add.outer(np.arange(n), np.arange(n))
     over = float(m[idx > line].sum())

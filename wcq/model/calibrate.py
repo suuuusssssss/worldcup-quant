@@ -14,6 +14,8 @@ objective hundreds of times.
 """
 from __future__ import annotations
 
+from wcq._compat import SLOTS
+
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -24,7 +26,7 @@ from scipy.special import gammaln
 from wcq.model.poisson import PoissonParams
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS)
 class TrainingSet:
     """Columnar view of a training window -- built once, reused every
     likelihood evaluation."""
@@ -108,23 +110,32 @@ def fit(ts: TrainingSet, start: PoissonParams | None = None) -> tuple[PoissonPar
     return params, info
 
 
+_CHI2_95_1DF = 3.841
+
+
 def profile_ci(ts: TrainingSet, fitted: PoissonParams, index: int,
-               span: float = 0.25, steps: int = 41) -> tuple[float, float]:
+               step: float = 0.0125, max_steps: int = 400) -> tuple[float, float]:
     """Profile-likelihood 95% interval for one parameter.
 
-    Walks the parameter over a grid, re-optimising the others at each point,
-    and keeps the range where 2*(logL_max - logL) <= 3.84 (chi-square, 1 df).
+    Walks outward from the MLE in each direction, re-optimising the other
+    parameters at every step, until 2*(logL_max - logL) crosses 3.841
+    (chi-square 95%, 1 df).  The walk goes as far as it needs to: a fixed
+    scan range would silently clip a wide interval at the edge of the grid
+    and report false precision, which is the one failure a CI must not have.
+    Endpoints are linearly interpolated between the last point inside and the
+    first outside; a bound not reached within `max_steps` is reported as
+    +/-inf rather than as a made-up number.
+
     Slower than inverting the Hessian but does not assume the likelihood is
     locally quadratic, which near the rho bound it is not.
     """
     base = fitted.as_vector()
     ll_max = -negative_log_likelihood(base, ts)
-    lo, hi = base[index] - span, base[index] + span
-    keep = []
-    for v in np.linspace(lo, hi, steps):
+    free = [i for i in range(4) if i != index]
+
+    def profile_ll(v: float, start: np.ndarray) -> tuple[float, np.ndarray]:
         theta = base.copy()
         theta[index] = v
-        free = [i for i in range(4) if i != index]
 
         def obj(sub):
             full = theta.copy()
@@ -132,8 +143,21 @@ def profile_ci(ts: TrainingSet, fitted: PoissonParams, index: int,
                 full[i] = sub[j]
             return negative_log_likelihood(full, ts)
 
-        r = minimize(obj, base[free], method="Nelder-Mead",
+        r = minimize(obj, start, method="Nelder-Mead",
                      options={"maxiter": 400, "xatol": 1e-4, "fatol": 1e-4})
-        if 2.0 * (ll_max - (-r.fun)) <= 3.841:
-            keep.append(v)
-    return (min(keep), max(keep)) if keep else (float("nan"), float("nan"))
+        return -r.fun, r.x
+
+    def walk(direction: float) -> float:
+        prev_v, prev_stat = base[index], 0.0
+        start = base[free].copy()
+        for k in range(1, max_steps + 1):
+            v = base[index] + direction * k * step
+            ll, start = profile_ll(v, start)          # warm-start the nuisances
+            stat = 2.0 * (ll_max - ll)
+            if stat > _CHI2_95_1DF:
+                frac = (_CHI2_95_1DF - prev_stat) / (stat - prev_stat)
+                return prev_v + frac * (v - prev_v)
+            prev_v, prev_stat = v, stat
+        return direction * float("inf")
+
+    return walk(-1.0), walk(+1.0)

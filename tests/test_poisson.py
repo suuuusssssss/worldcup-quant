@@ -42,11 +42,24 @@ def test_dixon_coles_raises_draw_probability():
 
 def test_rho_zero_recovers_independence():
     lam_h, lam_a = 1.5, 1.1
-    m = score_matrix(lam_h, lam_a, rho=0.0)
-    ph = _poisson_pmf_grid(lam_h)
-    pa = _poisson_pmf_grid(lam_a)
+    n = 12
+    m = score_matrix(lam_h, lam_a, rho=0.0, n=n)
+    ph = _poisson_pmf_grid(lam_h, n)
+    pa = _poisson_pmf_grid(lam_a, n)
     outer = np.outer(ph, pa)
     assert np.allclose(m, outer / outer.sum(), atol=1e-12)
+
+
+def test_grid_adapts_to_large_rates():
+    """A fixed 10-goal grid discards real mass at large rates; the adaptive
+    grid must keep 1X2 probabilities stable when the cap is raised further."""
+    from wcq.model.poisson import outcome_probs
+    lam_h, lam_a = 6.6, 1.2                     # a 600-point Elo gap regime
+    adaptive = outcome_probs(lam_h, lam_a)
+    huge = outcome_probs(lam_h, lam_a, n=80)
+    assert adaptive == pytest.approx(huge, abs=1e-7)
+    fixed = outcome_probs(lam_h, lam_a, n=10)   # the old behaviour, for scale
+    assert abs(fixed[0] - huge[0]) > 1e-4       # the bias the fix removes
 
 
 def test_score_matrix_is_a_distribution():
