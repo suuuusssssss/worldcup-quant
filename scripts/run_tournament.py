@@ -20,7 +20,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from wcq.data import loaders, sources
-from wcq.model.elo import EloConfig, EloEngine
+from wcq.model.elo import EloConfig, EloEngine, international_k
 from wcq.sim.bracket import (Team, exact_title_probs, mc_standard_error,
                              monte_carlo_title_probs, round_by_round, sims_for_precision)
 
@@ -42,12 +42,17 @@ def main() -> int:
     print(f"{len(used):,} international matches through {used[-1].date} "
           f"(cutoff {cutoff if cutoff != dt.date.max else 'none'})")
 
-    eng = EloEngine(EloConfig(k=20, home_advantage=65, season_regression=0.05))
+    eng = EloEngine(EloConfig(k=20, home_advantage=65, season_regression=0.05,
+                              k_fn=international_k))
     recent: dict[str, dt.date] = {}
     for m, _ in eng.stream(used):
         recent[m.home] = recent[m.away] = m.date
 
-    active = {t: r for t, r in eng.table().items()
+    # table(year=...) applies the same between-season regression a prediction
+    # made at the cutoff would see, so seeding cannot use a stale rating that
+    # observe() would have already pulled toward the mean.
+    as_of_year = (cutoff if cutoff != dt.date.max else used[-1].date).year
+    active = {t: r for t, r in eng.table(year=as_of_year).items()
               if eng.games(t) >= args.min_games
               and (used[-1].date - recent[t]).days < 900}
     top = sorted(active.items(), key=lambda kv: -kv[1])[: args.size]

@@ -21,7 +21,7 @@ from wcq.backtest.walkforward import WalkForwardConfig, generate_bets, run_walk_
 from wcq.data import loaders, sources
 from wcq.market.devig import fair_probs
 from wcq.market.kelly import SizingPolicy
-from wcq.model.elo import EloConfig
+from wcq.model.elo import EloConfig, international_k
 from wcq.schema import OUTCOME_INDEX
 
 
@@ -54,7 +54,13 @@ def main() -> int:
 
     cfg = WalkForwardConfig(
         refit_every_days=args.refit_days,
-        elo=EloConfig(k=args.elo_k, home_advantage=args.home_adv, season_regression=0.15),
+        elo=EloConfig(
+            k=args.elo_k, home_advantage=args.home_adv, season_regression=0.15,
+            # International matches carry the eloratings.net importance tiers
+            # (a World Cup final is not a friendly); club league fixtures all
+            # carry comparable weight, so the flat K applies there.
+            k_fn=international_k if args.dataset == "international" else None,
+        ),
     )
     t0 = time.time()
     res = run_walk_forward(matches, cfg,
@@ -145,17 +151,29 @@ def main() -> int:
     print(f"t-stat (NOT Sharpe)  : {st.t_stat:+.2f}")
     print(f"max drawdown         : {st.max_drawdown:.3f} units")
 
-    print(f"\n=== Inference ({args.resamples:,} resamples) ===")
+    n_block = max(args.resamples // 2, 1000)
+    print(f"\n=== Inference ({args.resamples:,} clustered / {n_block:,} block resamples) ===")
     cb = cluster_bootstrap(bets, n_resamples=args.resamples)
     print("clustered by match   :", cb.summary())
-    sb = stationary_block_bootstrap(bets, n_resamples=max(args.resamples // 2, 1000))
+    sb = stationary_block_bootstrap(bets, n_resamples=n_block)
     print("stationary block     :", sb.summary())
     if args.configs_tried > 1:
         print(f"deflated p ({args.configs_tried} configs): "
               f"{deflated_p_value(cb.p_value, args.configs_tried):.4f}")
 
     if args.json_out:
-        Path(args.json_out).write_text(json.dumps({
+        def json_safe(x):
+            """NaN and inf are not JSON; a file that json.load cannot read
+            back is not a record of anything."""
+            if isinstance(x, dict):
+                return {k: json_safe(v) for k, v in x.items()}
+            if isinstance(x, (list, tuple)):
+                return [json_safe(v) for v in x]
+            if isinstance(x, float) and not np.isfinite(x):
+                return None
+            return x
+
+        Path(args.json_out).write_text(json.dumps(json_safe({
             "n_matches": len(matches), "n_scored": len(res.predictions),
             "log_loss": metrics.log_loss(probs, actual),
             "log_loss_base": metrics.log_loss(base, actual),
@@ -163,8 +181,8 @@ def main() -> int:
             "rps": metrics.ranked_probability_score(probs, actual),
             "ece": metrics.expected_calibration_error(bins),
             "pnl": st.as_dict(),
-            "bootstrap": {"roi_ci": cb.roi_ci, "p_value": cb.p_value},
-        }, indent=2, default=float))
+            "bootstrap": {"roi_ci": list(cb.roi_ci), "p_value": cb.p_value},
+        }), indent=2, default=float, allow_nan=False) + "\n")
     return 0
 
 
