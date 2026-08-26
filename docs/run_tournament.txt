@@ -1,6 +1,6 @@
 49,416 international matches through 2026-06-10 (cutoff 2026-06-11)
 
-exact DP: 0.09 ms   Monte Carlo (2,000,000 sims): 0.26 s   speed-up 2,729x
+exact DP: 0.09 ms   Monte Carlo (2,000,000 sims): 0.25 s   speed-up 2,793x
 
   # team                 elo    title       mc      z  quarter     semi    final
   1 Spain               2016   0.2112   0.2110  -0.65    0.745    0.461    0.307
@@ -22,5 +22,3 @@ exact DP: 0.09 ms   Monte Carlo (2,000,000 sims): 0.26 s   speed-up 2,729x
 
 largest |z| vs exact: 2.42
 to resolve the favourite to +/-0.1pp you would need 640,038 simulations; the DP is exact in milliseconds.
-
-wrote C++ bracket literal to /private/tmp/claude-501/-Users-susanxiong-Desktop-worldcup-quant/09ee3759-0851-403d-92f3-57d71d07ce7e/scratchpad/bracket.inc
