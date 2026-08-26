@@ -1,0 +1,40 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev]"
+      - name: Unit tests (no network -- every test uses synthetic fixtures)
+        run: python3 -m pytest tests/ --cov=wcq --cov-report=term-missing
+
+  cpp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make -C cpp CXXFLAGS="-O3 -std=c++17 -Wall -Wextra -Werror -pthread"
+      - name: Monte Carlo must agree with the exact DP
+        run: ./cpp/mc_tournament --sims 20000000 --check | tee /tmp/out
+      - name: Fail if any |z| against the exact answer looks wrong
+        run: grep -q "(consistent)" /tmp/out
+      - name: Results must not depend on thread count
+        run: |
+          a=$(./cpp/mc_tournament --sims 2000000 --threads 1 | grep -E '^ +[0-9]+ ' | md5sum)
+          b=$(./cpp/mc_tournament --sims 2000000 --threads 8 | grep -E '^ +[0-9]+ ' | md5sum)
+          [ "$a" = "$b" ] || { echo "non-deterministic across thread counts"; exit 1; }
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make -C cpp debug
+      - run: ./cpp/mc_tournament_debug --sims 200000 --threads 4 --check
