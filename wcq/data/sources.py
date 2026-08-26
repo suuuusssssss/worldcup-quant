@@ -83,29 +83,44 @@ def _sha256(path: Path, chunk: int = 1 << 20) -> str:
 def fetch(name: str, *, force: bool = False, cache: Path | None = None) -> Path:
     """Return a local path to the named dataset, downloading it if needed.
 
-    Idempotent: a second call is a stat, not a download.
+    Idempotent: a second call is a hash check, not a download.  A cache hit
+    is verified against the digest recorded at download time -- a
+    content-addressed cache that never re-reads the content is only a naming
+    convention, and a corrupted or half-written file would otherwise be
+    served forever.
     """
     src = SOURCES[name]
     root = cache or DEFAULT_CACHE
     root.mkdir(parents=True, exist_ok=True)
     dest = root / src.filename
+    sidecar = root / (src.filename + ".sha256")
 
     if dest.exists() and not force:
-        return dest
+        if not sidecar.exists() or _sha256(dest) == sidecar.read_text().strip():
+            return dest
+        raise RuntimeError(
+            f"{dest} does not match its recorded SHA-256; the cached file is "
+            "corrupt. Re-download with fetch(name, force=True)."
+        )
 
     tmp_fd, tmp_name = tempfile.mkstemp(dir=root, suffix=".part")
     os.close(tmp_fd)
     tmp = Path(tmp_name)
+    side_tmp = Path(tmp_name + ".sha256")
     try:
         req = urllib.request.Request(src.url, headers={"User-Agent": "wcq/1.0"})
         with urllib.request.urlopen(req, timeout=120) as resp, tmp.open("wb") as out:
             shutil.copyfileobj(resp, out, length=1 << 20)
         digest = _sha256(tmp)
-        tmp.replace(dest)                      # atomic within one filesystem
-        (root / (src.filename + ".sha256")).write_text(digest + "\n")
+        # Sidecar goes live first: at every instant the visible (file, digest)
+        # pair is either the complete old one or the complete new one.
+        side_tmp.write_text(digest + "\n")
+        side_tmp.replace(sidecar)              # atomic within one filesystem
+        tmp.replace(dest)
     finally:
-        if tmp.exists():
-            tmp.unlink()
+        for leftover in (tmp, side_tmp):
+            if leftover.exists():
+                leftover.unlink()
     return dest
 
 

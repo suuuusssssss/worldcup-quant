@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import warnings
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -39,14 +40,25 @@ def _date(x: str) -> Optional[dt.date]:
         return None
 
 
-def iter_international(path: Path) -> Iterator[Match]:
+def iter_international(path: Path, *, stats: Optional[dict] = None) -> Iterator[Match]:
     """martj42 international results: date,home_team,away_team,home_score,
-    away_score,tournament,city,country,neutral"""
+    away_score,tournament,city,country,neutral
+
+    `stats`, when given, accumulates {"rows": <read>, "dropped": <unparseable>}
+    so callers can see how much of the file survived parsing instead of
+    trusting a silently shrunk sample.
+    """
+    if stats is None:
+        stats = {}
+    stats.setdefault("rows", 0)
+    stats.setdefault("dropped", 0)
     with Path(path).open(newline="", encoding="utf-8") as fh:
         for row in csv.DictReader(fh):
+            stats["rows"] += 1
             d = _date(row["date"])
             hg, ag = _i(row["home_score"]), _i(row["away_score"])
             if d is None or hg is None or ag is None:
+                stats["dropped"] += 1
                 continue
             yield Match(
                 date=d,
@@ -61,7 +73,8 @@ def iter_international(path: Path) -> Iterator[Match]:
             )
 
 
-def iter_club(path: Path, *, price: str = "b365", divisions: set[str] | None = None) -> Iterator[Match]:
+def iter_club(path: Path, *, price: str = "b365", divisions: set[str] | None = None,
+              stats: Optional[dict] = None) -> Iterator[Match]:
     """Club matches with real bookmaker prices.
 
     `price` selects which column set becomes the tradeable line:
@@ -75,15 +88,24 @@ def iter_club(path: Path, *, price: str = "b365", divisions: set[str] | None = N
         "best": ("MaxHome", "MaxDraw", "MaxAway", "BestOf17"),
     }[price]
     h_col, d_col, a_col, book = cols
+    if stats is None:
+        stats = {}
+    stats.setdefault("rows", 0)
+    stats.setdefault("dropped", 0)
 
     with Path(path).open(newline="", encoding="utf-8") as fh:
         for row in csv.DictReader(fh):
+            stats["rows"] += 1
             d = _date(row["MatchDate"])
             hg, ag = _i(row["FTHome"]), _i(row["FTAway"])
             if d is None or hg is None or ag is None:
+                stats["dropped"] += 1
                 continue
             div = row["Division"].strip()
-            if divisions and div not in divisions:
+            # `is not None`, not truthiness: an explicitly empty filter means
+            # "select nothing", while None means "no filter".  Conflating the
+            # two silently returns the whole file for divisions=set().
+            if divisions is not None and div not in divisions:
                 continue
             oh, od, oa = _f(row[h_col]), _f(row[d_col]), _f(row[a_col])
             odds = None
@@ -103,7 +125,8 @@ def iter_club(path: Path, *, price: str = "b365", divisions: set[str] | None = N
             )
 
 
-def iter_football_data_native(path: Path, *, prefer_closing: bool = True) -> Iterator[Match]:
+def iter_football_data_native(path: Path, *, prefer_closing: bool = True,
+                              stats: Optional[dict] = None) -> Iterator[Match]:
     """Parser for a raw football-data.co.uk season CSV downloaded directly.
 
     Those files carry both an opening and a closing Pinnacle line
@@ -115,6 +138,10 @@ def iter_football_data_native(path: Path, *, prefer_closing: bool = True) -> Ite
     close = ("PSCH", "PSCD", "PSCA")
     open_ = ("PSH", "PSD", "PSA")
     fallback = ("B365H", "B365D", "B365A")
+    if stats is None:
+        stats = {}
+    stats.setdefault("rows", 0)
+    stats.setdefault("dropped", 0)
 
     with Path(path).open(newline="", encoding="utf-8-sig") as fh:
         reader = csv.DictReader(fh)
@@ -127,7 +154,8 @@ def iter_football_data_native(path: Path, *, prefer_closing: bool = True) -> Ite
             cols, book, taken = fallback, "Bet365", "prematch"
 
         for row in reader:
-            raw = row.get("Date", "")
+            stats["rows"] += 1
+            raw = row.get("Date") or ""
             d = None
             for fmt in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d"):
                 try:
@@ -136,7 +164,13 @@ def iter_football_data_native(path: Path, *, prefer_closing: bool = True) -> Ite
                 except ValueError:
                     continue
             hg, ag = _i(row.get("FTHG", "")), _i(row.get("FTAG", ""))
-            if d is None or hg is None or ag is None:
+            # Season files routinely end in ragged short rows (trailing
+            # blank lines, mid-season snapshots); DictReader gives those None
+            # cells, so every field access has to survive None.
+            home = (row.get("HomeTeam") or "").strip()
+            away = (row.get("AwayTeam") or "").strip()
+            if d is None or hg is None or ag is None or not home or not away:
+                stats["dropped"] += 1
                 continue
             vals = [_f(row.get(c, "")) for c in cols]
             odds = None
@@ -144,18 +178,36 @@ def iter_football_data_native(path: Path, *, prefer_closing: bool = True) -> Ite
                 cand = Odds(*vals, book=book, taken=taken)
                 odds = cand if cand.is_valid() else None
             yield Match(
-                date=d, home=row["HomeTeam"].strip(), away=row["AwayTeam"].strip(),
-                competition=row.get("Div", "").strip(), home_goals=hg, away_goals=ag,
+                date=d, home=home, away=away,
+                competition=(row.get("Div") or "").strip(), home_goals=hg, away_goals=ag,
                 odds=odds, source="football-data.co.uk",
             )
 
 
+def _warn_on_heavy_drops(stats: dict, path: Path) -> None:
+    """A parser that quietly discards a chunk of its input is a selection
+    bias with no error message; 2% is far above the normal rate for either
+    dataset (well under 0.5%), so crossing it means the file layout changed."""
+    rows, dropped = stats.get("rows", 0), stats.get("dropped", 0)
+    if rows >= 100 and dropped / rows > 0.02:
+        warnings.warn(
+            f"{path}: dropped {dropped:,} of {rows:,} rows ({dropped / rows:.1%}) "
+            "as unparseable -- the file format may have changed",
+            stacklevel=3,
+        )
+
+
 def load_international(path: Path, tournaments_only: bool = False) -> list[Match]:
-    ms = list(iter_international(path))
+    stats: dict = {}
+    ms = list(iter_international(path, stats=stats))
+    _warn_on_heavy_drops(stats, path)
     if tournaments_only:
         ms = [m for m in ms if any(k in m.competition for k in TOURNAMENT_KEYWORDS)]
     return sort_chronologically(ms)
 
 
 def load_club(path: Path, **kw) -> list[Match]:
-    return sort_chronologically(list(iter_club(path, **kw)))
+    stats: dict = {}
+    ms = sort_chronologically(list(iter_club(path, stats=stats, **kw)))
+    _warn_on_heavy_drops(stats, path)
+    return ms
